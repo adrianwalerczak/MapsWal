@@ -13,8 +13,8 @@
 
     <title>Lokalizator Znajomych</title>
     
-    <!-- Konfiguracja PWA -->
-    <link rel="manifest" href='data:application/json,{"name":"Lokalizator Grupy","short_name":"Lokalizator","start_url":"/MapsWal/index.html","display":"standalone","background_color":"#0f172a","theme_color":"#4f46e5","icons":[{"src":"https://cdn-icons-png.flaticon.com/512/854/854878.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}]}'>
+    <!-- Konfiguracja PWA - Poprawiony start_url dla GitHub Pages -->
+    <link rel="manifest" href='data:application/json,{"name":"Lokalizator Grupy","short_name":"Lokalizator","start_url":"./index.html","display":"standalone","background_color":"#0f172a","theme_color":"#4f46e5","icons":[{"src":"https://cdn-icons-png.flaticon.com/512/854/854878.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}]}'>
 
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
@@ -26,7 +26,7 @@
         window.markers = {};
         window.deferredPrompt = null;
 
-        // Rejestracja Service Workera
+        // Rejestracja Service Workera (wymagana do instalacji na Androidzie)
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
                 const swCode = `
@@ -45,14 +45,19 @@
         import { getFirestore, doc, setDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 
-        // Załadowanie biblioteki map
-        const lscript = document.createElement('script');
-        lscript.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
-        document.head.appendChild(lscript);
-        const lstyle = document.createElement('link');
-        lstyle.rel = "stylesheet";
-        lstyle.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
-        document.head.appendChild(lstyle);
+        // Załadowanie biblioteki map Leaflet
+        const loadLeaflet = () => {
+            return new Promise((resolve) => {
+                const lscript = document.createElement('script');
+                lscript.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+                lscript.onload = resolve;
+                document.head.appendChild(lscript);
+                const lstyle = document.createElement('link');
+                lstyle.rel = "stylesheet";
+                lstyle.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+                document.head.appendChild(lstyle);
+            });
+        };
 
         const firebaseConfig = JSON.parse(__firebase_config);
         const app = initializeApp(firebaseConfig);
@@ -62,13 +67,13 @@
 
         const ALLOWED_NAMES = ["Julia", "Agnieszka", "Adrian", "Aleksandra"];
 
-        // Obsługa instalacji
-        window.addEventListener('beforeinstallprompt', (e) => {
-            e.preventDefault();
-            window.deferredPrompt = e;
-            const installBtn = document.getElementById('pwa-install-btn');
-            if (installBtn) installBtn.classList.remove('hidden');
-        });
+        // Funkcja wyświetlająca błędy na ekranie
+        const showStatus = (text, isError = false) => {
+            const errEl = document.getElementById('error-msg');
+            errEl.innerText = text;
+            errEl.classList.remove('hidden');
+            errEl.className = isError ? "text-red-500 text-sm mt-4 font-semibold" : "text-indigo-500 text-sm mt-4 font-semibold";
+        };
 
         window.installPWA = async () => {
             if (window.deferredPrompt) {
@@ -86,23 +91,30 @@
             const code = input.value.trim();
             
             if (ALLOWED_NAMES.includes(code)) {
+                showStatus("Łączenie...");
                 window.currentUser = code;
-                document.getElementById('login-screen').classList.add('hidden');
-                document.getElementById('app-screen').classList.remove('hidden');
                 
                 try {
+                    // Wymuszenie prośby o GPS przed wejściem do mapy
+                    if (!navigator.geolocation) {
+                        throw new Error("Twoja przeglądarka nie obsługuje GPS.");
+                    }
+
                     if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                         await signInWithCustomToken(auth, __initial_auth_token);
                     } else {
                         await signInAnonymously(auth);
                     }
+                    
+                    await loadLeaflet();
+                    
+                    document.getElementById('login-screen').classList.add('hidden');
+                    document.getElementById('app-screen').classList.remove('hidden');
                 } catch (error) {
-                    console.error("Auth error:", error);
+                    showStatus("Błąd: " + error.message, true);
                 }
             } else {
-                const err = document.getElementById('error-msg');
-                err.classList.remove('hidden');
-                err.innerText = "Nieprawidłowe imię.";
+                showStatus("Nieprawidłowe imię. Wybierz: Julia, Agnieszka, Adrian lub Aleksandra", true);
             }
         };
 
@@ -119,39 +131,37 @@
 
         function initMap() {
             if (window.map) return;
-            setTimeout(() => {
-                window.map = L.map('map', { zoomControl: false }).setView([52.2297, 21.0122], 13);
-                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                    attribution: '© OSM'
-                }).addTo(window.map);
-                L.control.zoom({ position: 'bottomright' }).addTo(window.map);
-            }, 500);
+            window.map = L.map('map', { zoomControl: false }).setView([52.2297, 21.0122], 13);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OSM'
+            }).addTo(window.map);
+            L.control.zoom({ position: 'bottomright' }).addTo(window.map);
         }
 
         function startTracking() {
-            if ("geolocation" in navigator) {
-                navigator.geolocation.watchPosition(async (position) => {
-                    if (!window.authReady || !auth.currentUser) return;
-                    const { latitude, longitude } = position.coords;
-                    try {
-                        const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'locations', window.currentUser);
-                        await setDoc(userRef, {
-                            name: window.currentUser,
-                            lat: latitude,
-                            lng: longitude,
-                            lastSeen: Date.now(),
-                            uid: auth.currentUser.uid
-                        }, { merge: true });
+            navigator.geolocation.watchPosition(async (position) => {
+                if (!window.authReady || !auth.currentUser) return;
+                const { latitude, longitude } = position.coords;
+                try {
+                    const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'locations', window.currentUser);
+                    await setDoc(userRef, {
+                        name: window.currentUser,
+                        lat: latitude,
+                        lng: longitude,
+                        lastSeen: Date.now(),
+                        uid: auth.currentUser.uid
+                    }, { merge: true });
 
-                        if (window.map) {
-                            if (!window.markers[window.currentUser]) {
-                                window.map.setView([latitude, longitude], 15);
-                            }
-                            updateMarker({ name: window.currentUser, lat: latitude, lng: longitude, lastSeen: Date.now(), isMe: true });
+                    if (window.map) {
+                        if (!window.markers[window.currentUser]) {
+                            window.map.setView([latitude, longitude], 15);
                         }
-                    } catch (e) { console.error(e); }
-                }, null, { enableHighAccuracy: true });
-            }
+                        updateMarker({ name: window.currentUser, lat: latitude, lng: longitude, lastSeen: Date.now(), isMe: true });
+                    }
+                } catch (e) { console.error(e); }
+            }, (err) => {
+                console.error("Błąd GPS:", err);
+            }, { enableHighAccuracy: true });
         }
 
         function listenToOthers() {
@@ -170,9 +180,10 @@
             if (window.markers[data.name]) {
                 window.markers[data.name].setLatLng(pos);
             } else {
+                const color = data.isMe ? '#3b82f6' : '#ef4444';
                 const icon = L.divIcon({
                     className: 'custom-div-icon',
-                    html: `<div style="background-color: ${data.isMe ? '#3b82f6' : '#ef4444'};" class="w-8 h-8 rounded-full border-4 border-white shadow-lg flex items-center justify-center text-white text-[10px] font-bold">${data.name[0]}</div>`,
+                    html: `<div style="background-color: ${color};" class="w-8 h-8 rounded-full border-4 border-white shadow-lg flex items-center justify-center text-white text-[10px] font-bold">${data.name[0]}</div>`,
                     iconSize: [32, 32],
                     iconAnchor: [16, 16]
                 });
@@ -180,31 +191,40 @@
                     .bindPopup(`<b>${data.name}</b>`);
             }
         }
+
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            window.deferredPrompt = e;
+            const installBtn = document.getElementById('pwa-install-btn');
+            if (installBtn) installBtn.classList.remove('hidden');
+        });
     </script>
     <style>
         #map { height: 100%; width: 100%; z-index: 1; }
         .hidden { display: none; }
         .glass { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); }
-        body, html { height: 100%; margin: 0; padding: 0; position: fixed; width: 100%; }
+        body, html { height: 100%; margin: 0; padding: 0; position: fixed; width: 100%; overflow: hidden; }
         .custom-div-icon { background: none; border: none; }
     </style>
 </head>
 <body class="bg-slate-900 text-white font-sans">
 
     <!-- EKRAN LOGOWANIA -->
-    <div id="login-screen" class="flex flex-col items-center justify-center h-full p-6 bg-slate-900">
+    <div id="login-screen" class="flex flex-col items-center justify-center h-full p-6 bg-slate-900 z-50 relative">
         <div class="bg-white text-slate-900 p-8 rounded-3xl shadow-2xl w-full max-w-sm text-center">
             <div class="mb-6"><i class="fas fa-location-arrow text-indigo-600 text-6xl"></i></div>
             <h1 class="text-2xl font-bold mb-4">Gdzie jesteśmy?</h1>
             <input type="text" id="login-code" placeholder="Twoje imię..." 
                    class="w-full border-2 border-gray-100 rounded-xl px-4 py-3 mb-4 text-center font-bold outline-none focus:border-indigo-600 transition-all">
+            
             <button onclick="window.login()" class="w-full bg-indigo-600 text-white font-bold py-4 rounded-xl shadow-lg active:scale-95 transition-transform">
-                URUCHOM MAPĘ
+                URUCHOM MAPĘ 111
             </button>
+            
             <p id="error-msg" class="text-red-500 text-sm mt-4 hidden font-semibold"></p>
 
             <button id="pwa-install-btn" onclick="window.installPWA()" class="mt-8 hidden w-full border-2 border-indigo-600 text-indigo-600 font-bold py-3 rounded-xl flex items-center justify-center gap-2">
-                <i class="fas fa-mobile-screen"></i> Zainstaluj jako aplikację
+                <i class="fas fa-mobile-screen"></i> Zainstaluj aplikację
             </button>
             
             <div class="mt-8 pt-6 border-t border-gray-100 text-[10px] text-gray-400 uppercase tracking-widest">
@@ -216,7 +236,7 @@
     <!-- EKRAN MAPY -->
     <div id="app-screen" class="hidden h-full flex flex-col">
         <header class="p-4 flex justify-between items-center glass border-b border-gray-200 text-slate-900 z-10 shadow-sm">
-            <h2 class="font-black text-lg tracking-tight">LOKALIZATOR</h2>
+            <h2 class="font-black text-lg tracking-tight uppercase">Lokalizator</h2>
             <div id="user-display" class="text-xs font-bold text-white px-4 py-1.5 bg-indigo-600 rounded-full shadow-md">...</div>
         </header>
 
