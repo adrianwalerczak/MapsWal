@@ -4,10 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="theme-color" content="#4f46e5">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Lokalizator Znajomych</title>
     
-    <!-- Konfiguracja PWA (Manifest wstrzyknięty) -->
-    <link rel="manifest" href='data:application/json,{"name":"Lokalizator Grupy","short_name":"Lokalizator","start_url":".","display":"standalone","background_color":"#0f172a","theme_color":"#4f46e5","icons":[{"src":"https://cdn-icons-png.flaticon.com/512/854/854878.png","sizes":"512x512","type":"image/png"}]}'>
+    <!-- Konfiguracja PWA (Manifest z pełnymi danymi) -->
+    <link rel="manifest" href='data:application/json,{"name":"Lokalizator Grupy","short_name":"Lokalizator","start_url":"/MapsWal/","display":"standalone","background_color":"#0f172a","theme_color":"#4f46e5","icons":[{"src":"https://cdn-icons-png.flaticon.com/512/854/854878.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}]}'>
 
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
@@ -19,6 +21,17 @@
         window.map = null;
         window.markers = {};
         window.deferredPrompt = null;
+
+        // REJESTRACJA SERVICE WORKERA (Wymagane przez Chrome do instalacji PWA)
+        if ('serviceWorker' in navigator) {
+            const swCode = `
+                self.addEventListener('install', e => self.skipWaiting());
+                self.addEventListener('fetch', e => e.respondWith(fetch(e.request)));
+            `;
+            const blob = new Blob([swCode], { type: 'application/javascript' });
+            const swUrl = URL.createObjectURL(blob);
+            navigator.serviceWorker.register(swUrl).catch(err => console.log('SW error:', err));
+        }
     </script>
 
     <!-- Firebase SDK -->
@@ -45,8 +58,9 @@
 
         const ALLOWED_NAMES = ["Julia", "Agnieszka", "Adrian", "Aleksandra"];
 
-        // Obsługa instalacji PWA
+        // Obsługa zdarzenia instalacji
         window.addEventListener('beforeinstallprompt', (e) => {
+            console.log('Got beforeinstallprompt');
             e.preventDefault();
             window.deferredPrompt = e;
             const installBtn = document.getElementById('pwa-install-btn');
@@ -177,10 +191,11 @@
             </button>
             <p id="error-msg" class="text-red-500 text-sm mt-4 hidden"></p>
 
-            <!-- Przycisk Instalacji -->
+            <!-- Przycisk Instalacji (Pojawi się tylko na mobilnych gdy system pozwoli) -->
             <button id="pwa-install-btn" onclick="window.installPWA()" class="mt-6 hidden w-full border-2 border-indigo-600 text-indigo-600 font-bold py-2 rounded-xl flex items-center justify-center gap-2">
                 <i class="fas fa-download"></i> Zainstaluj aplikację
             </button>
+            <p class="text-gray-400 text-[10px] mt-2">Jeśli nie widzisz przycisku, użyj menu przeglądarki "Dodaj do ekranu głównego"</p>
         </div>
     </div>
 
