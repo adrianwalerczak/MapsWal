@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Lokalizator Znajomych</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    
+    <script>
+        // Inicjalizacja zmiennych globalnych NATYCHMIAST (rozwiązuje ReferenceError)
+        window.currentUser = null;
+        window.authReady = false;
+        window.map = null;
+        window.markers = {};
+    </script>
+
+    <!-- Firebase SDK -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+
+        // Mapy Leaflet
+        const lscript = document.createElement('script');
+        lscript.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+        document.head.appendChild(lscript);
+        const lstyle = document.createElement('link');
+        lstyle.rel = "stylesheet";
+        lstyle.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+        document.head.appendChild(lstyle);
+
+        // Konfiguracja Firebase
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'lokalizator-znajomych';
+
+        const ALLOWED_NAMES = ["Julia", "Agnieszka", "Adrian", "Aleksandra"];
+
+        // Funkcja logowania przypisana do window
+        window.login = async () => {
+            const input = document.getElementById('login-code');
+            const code = input.value.trim();
+            
+            if (ALLOWED_NAMES.includes(code)) {
+                window.currentUser = code;
+                document.getElementById('login-screen').classList.add('hidden');
+                document.getElementById('app-screen').classList.remove('hidden');
+                
+                try {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                } catch (error) {
+                    console.error("Błąd logowania:", error);
+                    showError("Błąd połączenia z serwerem.");
+                }
+            } else {
+                showError("Nieprawidłowy kod. Spróbuj: Julia, Agnieszka, Adrian lub Aleksandra");
+            }
+        };
+
+        function showError(msg) {
+            const err = document.getElementById('error-msg');
+            err.innerText = msg;
+            err.classList.remove('hidden');
+        }
+
+        onAuthStateChanged(auth, (user) => {
+            if (user && window.currentUser) {
+                window.authReady = true;
+                
+                // Aktualizacja UI imienia bezpośrednio tutaj
+                const userDisplay = document.getElementById('user-display');
+                if (userDisplay) userDisplay.innerText = window.currentUser;
+                
+                initMap();
+                startTracking();
+                listenToOthers();
+            }
+        });
+
+        function initMap() {
+            if (window.map) return;
+            setTimeout(() => {
+                window.map = L.map('map').setView([52.2297, 21.0122], 13);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '© OpenStreetMap'
+                }).addTo(window.map);
+            }, 500);
+        }
+
+        function startTracking() {
+            if ("geolocation" in navigator) {
+                navigator.geolocation.watchPosition(async (position) => {
+                    if (!window.authReady || !auth.currentUser) return;
+
+                    const { latitude, longitude } = position.coords;
+                    
+                    try {
+                        const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'locations', window.currentUser);
+                        await setDoc(userRef, {
+                            name: window.currentUser,
+                            lat: latitude,
+                            lng: longitude,
+                            lastSeen: Date.now(),
+                            uid: auth.currentUser.uid
+                        }, { merge: true });
+
+                        if (window.map) {
+                            if (!window.markers[window.currentUser]) {
+                                window.map.setView([latitude, longitude], 15);
+                            }
+                            updateMarker({ name: window.currentUser, lat: latitude, lng: longitude, lastSeen: Date.now(), isMe: true });
+                        }
+                    } catch (e) {
+                        console.error("Błąd zapisu Firestore:", e);
+                    }
+                }, (error) => {
+                    console.error("GPS Error:", error.message);
+                }, {
+                    enableHighAccuracy: true,
+                    maximumAge: 5000,
+                    timeout: 10000
+                });
+            }
+        }
+
+        function listenToOthers() {
+            if (!window.authReady || !auth.currentUser) return;
+
+            const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'locations');
+            onSnapshot(colRef, (snapshot) => {
+                snapshot.forEach((doc) => {
+                    const data = doc.data();
+                    if (data.name !== window.currentUser) {
+                        updateMarker(data);
+                    }
+                });
+            }, (error) => {
+                console.error("Firestore Error:", error);
+            });
+        }
+
+        function updateMarker(data) {
+            if (!window.map) return;
+            
+            const pos = [data.lat, data.lng];
+            
+            if (window.markers[data.name]) {
+                window.markers[data.name].setLatLng(pos);
+            } else {
+                window.markers[data.name] = L.marker(pos)
+                    .addTo(window.map)
+                    .bindPopup(`<b>${data.name}</b><br>Widziany: ${new Date(data.lastSeen).toLocaleTimeString()}`);
+                
+                if (data.isMe) {
+                    window.markers[data.name].bindTooltip("To Ty", { permanent: true, direction: 'top' }).openTooltip();
+                }
+            }
+        }
+    </script>
+    <style>
+        #map { height: calc(100vh - 120px); width: 100%; border-radius: 20px; z-index: 1; }
+        .hidden { display: none; }
+        .glass { background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(10px); }
+        .leaflet-container { font-family: inherit; }
+    </style>
+</head>
+<body class="bg-slate-900 text-white font-sans overflow-hidden">
+
+    <!-- EKRAN LOGOWANIA -->
+    <div id="login-screen" class="flex flex-col items-center justify-center h-screen p-6 overflow-y-auto">
+        <div class="bg-white text-slate-900 p-8 rounded-3xl shadow-2xl w-full max-w-sm text-center">
+            <div class="mb-6">
+                <i class="fas fa-street-view text-indigo-600 text-6xl"></i>
+            </div>
+            <h1 class="text-2xl font-bold mb-2">Lokalizator Grupy</h1>
+            <p class="text-gray-500 mb-6 italic text-sm">Wpisz swoje imię jako kod dostępu</p>
+            
+            <input type="text" id="login-code" placeholder="Np. Julia..." 
+                   class="w-full border-2 border-gray-100 rounded-xl px-4 py-3 mb-4 focus:border-indigo-500 outline-none transition-all text-center font-bold">
+            
+            <button onclick="window.login()" class="w-full bg-indigo-600 text-white font-bold py-3 rounded-xl hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-200">
+                Wejdź do mapy
+            </button>
+            
+            <p id="error-msg" class="text-red-500 text-sm mt-4 hidden font-medium"></p>
+        </div>
+    </div>
+
+    <!-- EKRAN MAPY -->
+    <div id="app-screen" class="hidden h-screen flex flex-col">
+        <header class="p-4 flex justify-between items-center glass border-b border-gray-200 text-slate-900">
+            <h2 class="font-bold flex items-center gap-2 text-sm md:text-base">
+                <span class="w-3 h-3 bg-green-500 rounded-full animate-pulse"></span>
+                Mapa Grupy
+            </h2>
+            <div id="user-display" class="text-xs font-bold text-indigo-600 px-3 py-1 bg-indigo-50 rounded-lg">...</div>
+        </header>
+
+        <main class="flex-grow p-2">
+            <div id="map" class="shadow-xl"></div>
+        </main>
+
+        <footer class="p-4 glass text-slate-900 flex justify-center items-center gap-6 text-xs font-semibold">
+            <div class="flex items-center gap-2">
+                <span class="w-3 h-3 bg-blue-500 rounded-full border border-white"></span> Ty
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="w-3 h-3 bg-red-500 rounded-full border border-white"></span> Znajomi
+            </div>
+        </footer>
+    </div>
+
+</body>
+</html>
